@@ -88,6 +88,7 @@
   .spine .title{writing-mode:vertical-rl;transform:rotate(180deg);font-family:"Fraunces",serif;font-weight:500;font-size:12px;line-height:1.05;letter-spacing:.01em;margin-top:14px;max-height:calc(var(--h) - 44px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 1px rgba(0,0,0,.35);}
   .spine .foot{writing-mode:vertical-rl;transform:rotate(180deg);font-size:8px;letter-spacing:.1em;text-transform:uppercase;opacity:.72;margin-bottom:11px;white-space:nowrap;max-height:70px;overflow:hidden;}
   .spine:hover,.spine:focus-visible{transform:translateY(-14px) rotateZ(-1.5deg);box-shadow:0 22px 26px -14px rgba(0,0,0,.85),0 0 0 1px var(--brass);outline:none;filter:brightness(1.08);}
+  .spine.has-cover .title,.spine.has-cover .foot{text-shadow:0 1px 3px rgba(0,0,0,.85),0 0 2px rgba(0,0,0,.6);}
   .spine.dim{opacity:.12;filter:grayscale(.5) brightness(.7);}
   .spine.pulled{opacity:0;transform:translateY(-40px) scale(.9);}
 
@@ -99,6 +100,7 @@
   .stage{perspective:1250px;perspective-origin:50% 42%;display:flex;align-items:center;justify-content:center;padding:10px;user-select:none;}
   .book3d{--w:214px;--h:318px;--d:40px;--ry:-26deg;width:var(--w);height:var(--h);position:relative;transform-style:preserve-3d;transform:rotateY(var(--ry)) rotateX(3deg);transition:transform .55s cubic-bezier(.22,1,.36,1);cursor:grab;touch-action:none;will-change:transform;user-select:none;-webkit-user-select:none;}
   .book3d.dragging{transition:none;cursor:grabbing;}
+  .book3d.spinning{transition:none;}
   /* caras centradas en el origen (left/top 50% + margen negativo), luego rotadas y empujadas hacia afuera */
   .book3d .face{position:absolute;left:50%;top:50%;overflow:hidden;backface-visibility:hidden;}
   .face.front,.face.back{width:var(--w);height:var(--h);margin-left:calc(var(--w) / -2);margin-top:calc(var(--h) / -2);border-radius:2px 6px 6px 2px;}
@@ -318,6 +320,31 @@ DATA.sections.forEach((sec,i) => {
 /* ---- render de estantes ---- */
 const stacks = document.getElementById("stacks");
 
+// Carga perezosa del fragmento de portada en el lomo (extremo izquierdo de la tapa).
+// Cada lomo arranca con su color de sección; al entrar en pantalla intenta la portada de Koha.
+let coverObserver = null;
+if("IntersectionObserver" in window){
+  coverObserver = new IntersectionObserver((entries,obs) => {
+    entries.forEach(en => { if(en.isIntersecting){ obs.unobserve(en.target); loadSpineCover(en.target); } });
+  }, {rootMargin:"250px"});
+}
+function loadSpineCover(el){
+  const b = BY_ID[el.dataset.id];
+  const url = b && coverUrl(b);
+  if(!url) return;
+  const pre = new Image();
+  pre.onload = () => {
+    if(pre.naturalWidth <= 2) return;                     // imagen vacía / placeholder
+    el.style.backgroundImage =
+      `linear-gradient(90deg,rgba(0,0,0,.42) 0%,rgba(0,0,0,0) 16%,rgba(255,255,255,.14) 50%,rgba(0,0,0,0) 84%,rgba(0,0,0,.42) 100%), url("${url}")`;
+    el.style.backgroundSize     = "100% 100%, auto 100%"; // sheen llena; portada a la altura del lomo
+    el.style.backgroundPosition = "center, left center";  // franja del borde izquierdo
+    el.style.backgroundRepeat   = "no-repeat, no-repeat";
+    el.classList.add("has-cover");
+  };
+  pre.src = url;
+}
+
 function makeSpine(b){
   const pal = PALETTE[b.col] || PALETTE.charcoal;
   const el = document.createElement("button");
@@ -331,6 +358,7 @@ function makeSpine(b){
   el.style.setProperty("--t", pal.t);
   el.innerHTML = `<span class="title">${b.t}</span><span class="foot">${apellido(b.a)}</span>`;
   el.addEventListener("click", () => openBook(b.id, el));
+  if(coverObserver) coverObserver.observe(el); else loadSpineCover(el);
   return el;
 }
 function booksRow(books){
@@ -485,15 +513,42 @@ function openBook(id, spineEl){
     document.getElementById("iResourceLabel").textContent = "Recurso relacionado · "+host;
   } else res.style.display = "none";
 
-  currentRY = -26; book3d.style.setProperty("--ry","-26deg"); setActive("btnFront");
+  currentRY = -26; setActive("btnFront");
   overlay.classList.add("open");
+  startAutoSpin();
   document.getElementById("btnClose").focus();
 }
 
-function closeBook(){ overlay.classList.remove("open"); if(typeof endDrag==="function") endDrag(); }
+/* ---- auto-rotación suave hasta la primera interacción ---- */
+let autoSpinId = null;
+function startAutoSpin(){
+  stopAutoSpin();
+  book3d.classList.add("spinning");                                         // sin transición durante el giro
+  const step = () => {
+    currentRY += 0.35;                                                      // ~21°/seg: giro completo en ~17s
+    book3d.style.setProperty("--ry", currentRY+"deg");
+    const norm = ((currentRY%360)+360)%360;
+    setActive(norm>90 && norm<270 ? "btnBack" : "btnFront");
+    autoSpinId = requestAnimationFrame(step);
+  };
+  autoSpinId = requestAnimationFrame(step);
+}
+function stopAutoSpin(){
+  if(autoSpinId != null){ cancelAnimationFrame(autoSpinId); autoSpinId = null; }
+  book3d.classList.remove("spinning");
+}
+// gira a una cara concreta por el camino más corto
+function faceTo(base, label){
+  stopAutoSpin();
+  currentRY = base + Math.round((currentRY - base)/360)*360;
+  book3d.style.setProperty("--ry", currentRY+"deg");
+  setActive(label);
+}
+
+function closeBook(){ overlay.classList.remove("open"); stopAutoSpin(); if(typeof endDrag==="function") endDrag(); }
 function setActive(id){ ["btnFront","btnBack"].forEach(x => document.getElementById(x).classList.toggle("active", x===id)); }
-document.getElementById("btnFront").onclick = () => { currentRY=-26; book3d.style.setProperty("--ry","-26deg"); setActive("btnFront"); };
-document.getElementById("btnBack").onclick  = () => { currentRY=180; book3d.style.setProperty("--ry","180deg"); setActive("btnBack"); };
+document.getElementById("btnFront").onclick = () => faceTo(-26, "btnFront");
+document.getElementById("btnBack").onclick  = () => faceTo(180, "btnBack");
 document.getElementById("btnClose").onclick = closeBook;
 overlay.addEventListener("click", e => { if(e.target===overlay) closeBook(); });
 document.addEventListener("keydown", e => { if(e.key==="Escape") closeBook(); });
@@ -519,6 +574,7 @@ function endDrag(){
   setActive(norm>90 && norm<270 ? "btnBack" : "btnFront");
 }
 book3d.addEventListener("pointerdown", e => {
+  stopAutoSpin();                         // la interacción del usuario toma el control
   dragging=true; startX=e.clientX; startRY=currentRY;
   book3d.classList.add("dragging");
   try{ book3d.setPointerCapture(e.pointerId); }catch(_){}
